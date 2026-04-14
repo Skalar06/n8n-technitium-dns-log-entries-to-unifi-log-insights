@@ -3,12 +3,25 @@ const payload = inputItem.json?.body ?? [];
 const entries = Array.isArray(payload) ? payload : [payload];
 
 const blockedTypes = new Set(["SOA", "IXFR"]);
+
+// Exact client IP filters.
+// Keep these for known infrastructure IPs that should never appear as real clients.
 const blockedClientIps = new Set([
   "192.0.2.10",
   "192.0.2.11",
   "198.51.100.10",
   "172.16.0.1",
 ]);
+
+// Optional IPv4 subnet filters for internal bridge / gateway / docker ranges.
+// Leave empty in the public template unless you explicitly want to filter ranges.
+// Example real-world values could be:
+// "172.21.16.0/24",
+// "172.22.16.0/24",
+const blockedClientCidrs = [
+  // "172.21.16.0/24",
+  // "172.22.16.0/24",
+];
 
 // RFC3164 BSD timestamp in UTC with space-padded day ("Apr  4").
 // If ts is missing, current UTC time is used.
@@ -26,15 +39,15 @@ function formatRfc3164(ts) {
     return null;
   }
 
-  const months = ['Jan','Feb','Mar','Apr','May','Jun',
-                  'Jul','Aug','Sep','Oct','Nov','Dec'];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   const mon = months[date.getUTCMonth()];
   const day = date.getUTCDate();
   const dd = day < 10 ? ` ${day}` : `${day}`;
-  const hh = String(date.getUTCHours()).padStart(2, '0');
-  const mm = String(date.getUTCMinutes()).padStart(2, '0');
-  const ss = String(date.getUTCSeconds()).padStart(2, '0');
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mm = String(date.getUTCMinutes()).padStart(2, "0");
+  const ss = String(date.getUTCSeconds()).padStart(2, "0");
 
   return `${mon} ${dd} ${hh}:${mm}:${ss}`;
 }
@@ -67,6 +80,90 @@ function normalizeClientIp(value) {
   if (plainIpMatch) return plainIpMatch[1];
 
   return normalized;
+}
+
+function isValidIpv4(ip) {
+  if (typeof ip !== "string") return false;
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return false;
+    const num = Number(part);
+    if (num < 0 || num > 255) return false;
+  }
+
+  return true;
+}
+
+function ipv4ToInt(ip) {
+  if (!isValidIpv4(ip)) return null;
+  const [a, b, c, d] = ip.split(".").map(Number);
+  return (((a * 256 + b) * 256 + c) * 256 + d) >>> 0;
+}
+
+function parseIpv4Cidr(cidr) {
+  if (typeof cidr !== "string") return null;
+
+  const trimmed = cidr.trim();
+  const match = trimmed.match(/^((?:\d{1,3}\.){3}\d{1,3})\/(\d{1,2})$/);
+  if (!match) return null;
+
+  const networkIp = match[1];
+  const prefix = Number(match[2]);
+
+  if (!isValidIpv4(networkIp)) return null;
+  if (prefix < 0 || prefix > 32) return null;
+
+  const networkInt = ipv4ToInt(networkIp);
+  if (networkInt === null) return null;
+
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  const normalizedNetwork = networkInt & mask;
+
+  return {
+    cidr: trimmed,
+    prefix,
+    mask,
+    networkInt: normalizedNetwork,
+  };
+}
+
+function isIpv4InCidr(ip, cidr) {
+  const ipInt = ipv4ToInt(ip);
+  const parsedCidr = parseIpv4Cidr(cidr);
+
+  if (ipInt === null || parsedCidr === null) {
+    return null;
+  }
+
+  return (ipInt & parsedCidr.mask) === parsedCidr.networkInt;
+}
+
+function getClientIpSkipReason(clientIp) {
+  if (!clientIp) {
+    return "missing_client_ip";
+  }
+
+  if (blockedClientIps.has(clientIp)) {
+    return `filtered_client_ip_${clientIp}`;
+  }
+
+  if (isValidIpv4(clientIp)) {
+    for (const cidr of blockedClientCidrs) {
+      const match = isIpv4InCidr(clientIp, cidr);
+
+      if (match === null) {
+        return `invalid_blocked_client_cidr_${cidr}`;
+      }
+
+      if (match) {
+        return `filtered_client_subnet_${cidr}`;
+      }
+    }
+  }
+
+  return null;
 }
 
 const out = [];
@@ -132,12 +229,10 @@ for (const entry of entries) {
     skipReason = "missing_question_type";
   } else if (!normalizedName) {
     skipReason = "missing_question_name";
-  } else if (!normalizedClientIp) {
-    skipReason = "missing_client_ip";
   } else if (blockedTypes.has(normalizedType)) {
     skipReason = `filtered_type_${normalizedType}`;
-  } else if (blockedClientIps.has(normalizedClientIp)) {
-    skipReason = `filtered_client_${normalizedClientIp}`;
+  } else {
+    skipReason = getClientIpSkipReason(normalizedClientIp);
   }
 
   if (skipReason) {
