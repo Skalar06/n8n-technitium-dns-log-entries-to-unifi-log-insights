@@ -241,6 +241,10 @@ If the header is missing or does not match the configured shared secret, the wor
 - If your Technitium instance sends a slightly different JSON structure, adapt the n8n Code node accordingly.
 - Test with a single DNS query first before enabling permanent export.
 
+Important: This workflow emits RFC3164 timestamps in UTC.
+For correct log timestamps, the `unifi-log-insight` container must also run in UTC.
+
+Why: RFC3164 syslog timestamps do not include timezone information. The receiver interprets them in the container’s local timezone. If the workflow emits UTC but the container runs in another timezone such as `Europe/Berlin`, log rows may appear shifted by hours or seem to be missing.
 
 ## License
 
