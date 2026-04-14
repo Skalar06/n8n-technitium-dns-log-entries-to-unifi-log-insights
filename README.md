@@ -1,4 +1,4 @@
-# Technitium DNS -> UniFi Log Insights DNS
+# Technitium DNS -> UniFi Insights Plus DNS
 
 n8n workflow for receiving Technitium DNS query logs via webhook, transforming them into an RFC3164 / dnsmasq-like syslog format, and forwarding them to UniFi Log Insights via UDP syslog.
 
