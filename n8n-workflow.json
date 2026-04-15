@@ -1,5 +1,5 @@
 {
-  "name": "Technitium DNS -> UniFi Log Insights DNS (Public Template) v0.1.2",
+  "name": "Technitium DNS -> UniFi Log Insights DNS v0.1.3",
   "nodes": [
     {
       "parameters": {
@@ -10,7 +10,7 @@
       },
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
-      "position": [-1424, -208],
+      "position": [-1424, -352],
       "id": "92c183f1-3018-41d4-a600-1dadfa8e7ebd",
       "name": "Webhook"
     },
@@ -41,7 +41,7 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [-1200, -208],
+      "position": [-1200, -352],
       "id": "32dc90c4-0891-45d9-9ebf-73297e5b9f27",
       "name": "If"
     },
@@ -55,7 +55,7 @@
       },
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [-528, -304],
+      "position": [-528, -448],
       "id": "05473b99-1c82-4b15-9da9-e6b3a97ebdc7",
       "name": "Respond to Webhook 'true'"
     },
@@ -69,7 +69,7 @@
       },
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [-976, -112],
+      "position": [-976, -256],
       "id": "c515fd27-ea49-49c8-8d24-740c03752a3a",
       "name": "Respond to Webhook 'forbidden'"
     },
@@ -79,45 +79,53 @@
       },
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [-752, -304],
+      "position": [-752, -448],
       "id": "d522ddd8-3ae5-4ca9-9b20-4b9d4cd90c88",
       "name": "Execute Command"
     },
     {
       "parameters": {
-        "jsCode": "const inputItem = $input.first();\nconst payload = inputItem.json?.body ?? [];\nconst entries = Array.isArray(payload) ? payload : [payload];\n\nconst blockedTypes = new Set([\"SOA\", \"IXFR\"]);\nconst blockedClientIps = new Set([\n  \"192.0.2.10\",\n  \"192.0.2.11\",\n  \"198.51.100.10\",\n  \"172.16.0.1\",\n]);\n\n// RFC3164 BSD timestamp in UTC with space-padded day (\"Apr  4\").\n// The unifi-log-insight container must also run in UTC (its default) so\n// the receiver's parse_syslog_timestamp() interprets these correctly.\nfunction formatRfc3164(ts) {\n  const date = ts ? new Date(ts) : new Date();\n  if (Number.isNaN(date.getTime())) {\n    throw new Error(`Invalid timestamp: ${ts}`);\n  }\n  const months = ['Jan','Feb','Mar','Apr','May','Jun',\n                  'Jul','Aug','Sep','Oct','Nov','Dec'];\n  const mon = months[date.getUTCMonth()];\n  const day = date.getUTCDate();\n  const dd  = day < 10 ? ` ${day}` : `${day}`;\n  const hh  = String(date.getUTCHours()).padStart(2, '0');\n  const mm  = String(date.getUTCMinutes()).padStart(2, '0');\n  const ss  = String(date.getUTCSeconds()).padStart(2, '0');\n  return `${mon} ${dd} ${hh}:${mm}:${ss}`;\n}\n\nfunction tryParseJsonString(value) {\n  if (typeof value !== \"string\" || !value.trim()) return null;\n  try {\n    return JSON.parse(value);\n  } catch {\n    return null;\n  }\n}\n\nconst out = [];\n\nfor (const entry of entries) {\n  const parsed =\n    tryParseJsonString(entry.RenderedMessage) ??\n    tryParseJsonString(entry.MessageTemplate) ??\n    (entry && typeof entry === \"object\" ? entry : null);\n\n  if (!parsed || typeof parsed !== \"object\") {\n    out.push({\n      json: {\n        ok: true,\n        forwarded: false,\n        skipReason: \"unparsable_log_entry\",\n        original: entry,\n      },\n    });\n    continue;\n  }\n\n  const timestampRaw =\n    parsed.timestamp ??\n    parsed.Timestamp ??\n    entry.Timestamp ??\n    null;\n\n  const clientIpRaw =\n    parsed.clientIp ??\n    parsed.clientIPAddress ??\n    parsed.client ??\n    parsed.remoteAddress ??\n    null;\n\n  const question = parsed.question ?? {};\n  const questionName =\n    question.questionName ??\n    question.name ??\n    parsed.questionName ??\n    parsed.domain ??\n    null;\n\n  const questionType =\n    question.questionType ??\n    question.type ??\n    parsed.questionType ??\n    parsed.type ??\n    null;\n\n  const protocolRaw = String(parsed.protocol ?? \"\").trim();\n  const responseCodeRaw = String(parsed.responseCode ?? \"\").trim();\n  const responseTypeRaw = String(parsed.responseType ?? \"\").trim();\n\n  const normalizedType = String(questionType ?? \"\").trim().toUpperCase();\n  const normalizedName = String(questionName ?? \"\").trim();\n\n  // Strip optional brackets and port from client IPs (e.g. \"[::1]:5353\" -> \"::1\").\n  let normalizedClientIp = String(clientIpRaw ?? \"\").trim();\n  const ipMatch = normalizedClientIp.match(/^\\[?([0-9a-fA-F:.]+)\\]?/);\n  if (ipMatch) normalizedClientIp = ipMatch[1];\n\n  let skipReason = null;\n\n  if (!normalizedType) {\n    skipReason = \"missing_question_type\";\n  } else if (!normalizedName) {\n    skipReason = \"missing_question_name\";\n  } else if (!normalizedClientIp) {\n    skipReason = \"missing_client_ip\";\n  } else if (blockedTypes.has(normalizedType)) {\n    skipReason = `filtered_type_${normalizedType}`;\n  } else if (blockedClientIps.has(normalizedClientIp)) {\n    skipReason = `filtered_client_${normalizedClientIp}`;\n  }\n\n  if (skipReason) {\n    out.push({\n      json: {\n        ok: true,\n        forwarded: false,\n        skipReason,\n        original: parsed,\n        originalEntry: entry,\n      },\n    });\n    continue;\n  }\n\n  const rfc3164Timestamp = formatRfc3164(timestampRaw);\n\n  const extras = [\n    protocolRaw ? `proto=${protocolRaw}` : null,\n    responseCodeRaw ? `rcode=${responseCodeRaw}` : null,\n    responseTypeRaw ? `rtype=${responseTypeRaw}` : null,\n  ].filter(Boolean).join(\" \");\n\n  const syslogLine =\n    `<14>${rfc3164Timestamp} technitium-dns dnsmasq[1]: ` +\n    `query[${normalizedType}] ${normalizedName} from ${normalizedClientIp}` +\n    (extras ? ` ${extras}` : \"\");\n\n  out.push({\n    json: {\n      ok: true,\n      forwarded: true,\n      skipReason: null,\n      syslogLine,\n      parsed: {\n        timestampRaw,\n        clientIp: normalizedClientIp,\n        questionName: normalizedName,\n        questionType: normalizedType,\n        protocol: protocolRaw || null,\n        responseCode: responseCodeRaw || null,\n        responseType: responseTypeRaw || null,\n      },\n      original: parsed,\n      originalEntry: entry,\n    },\n  });\n}\n\nreturn out;\n"
+        "jsCode": "const inputItem = $input.first();\nconst payload = inputItem.json?.body ?? [];\nconst entries = Array.isArray(payload) ? payload : [payload];\n\nconst blockedTypes = new Set([\"SOA\", \"IXFR\"]);\nconst blockedClientIps = new Set([\n  \"172.22.16.1\",\n  \"172.21.16.1\",\n]);\n\nfunction formatRfc3164Utc(ts) {\n  const hasExplicitTimestamp =\n    ts !== null &&\n    ts !== undefined &&\n    String(ts).trim() !== \"\";\n\n  const date = hasExplicitTimestamp ? new Date(ts) : new Date();\n\n  if (Number.isNaN(date.getTime())) {\n    return null;\n  }\n\n  const months = [\"Jan\", \"Feb\", \"Mar\", \"Apr\", \"May\", \"Jun\",\n                  \"Jul\", \"Aug\", \"Sep\", \"Oct\", \"Nov\", \"Dec\"];\n\n  const mon = months[date.getUTCMonth()];\n  const day = date.getUTCDate();\n  const dd = day < 10 ? ` ${day}` : `${day}`;\n  const hh = String(date.getUTCHours()).padStart(2, \"0\");\n  const mm = String(date.getUTCMinutes()).padStart(2, \"0\");\n  const ss = String(date.getUTCSeconds()).padStart(2, \"0\");\n\n  return `${mon} ${dd} ${hh}:${mm}:${ss}`;\n}\n\nfunction tryParseJsonString(value) {\n  if (typeof value !== \"string\" || !value.trim()) return null;\n  try {\n    return JSON.parse(value);\n  } catch {\n    return null;\n  }\n}\n\nfunction normalizeClientIp(value) {\n  const raw = String(value ?? \"\").trim();\n  if (!raw) return \"\";\n\n  const bracketedIpv6 = raw.match(/^\\[([0-9a-fA-F:.]+)\\](?::\\d+)?$/);\n  if (bracketedIpv6) return bracketedIpv6[1];\n\n  const ipv4WithPort = raw.match(/^((?:\\d{1,3}\\.){3}\\d{1,3})(?::\\d+)?$/);\n  if (ipv4WithPort) return ipv4WithPort[1];\n\n  return raw;\n}\n\nconst out = [];\n\nfor (const entry of entries) {\n  const parsed =\n    tryParseJsonString(entry?.RenderedMessage) ??\n    tryParseJsonString(entry?.MessageTemplate) ??\n    (entry && typeof entry === \"object\" ? entry : null);\n\n  if (!parsed || typeof parsed !== \"object\") {\n    out.push({\n      json: {\n        ok: true,\n        forwarded: false,\n        skipReason: \"unparsable_log_entry\",\n        original: entry,\n      },\n    });\n    continue;\n  }\n\n  const timestampRaw =\n    parsed.timestamp ??\n    parsed.Timestamp ??\n    entry?.Timestamp ??\n    null;\n\n  const clientIpRaw =\n    parsed.clientIp ??\n    parsed.clientIPAddress ??\n    parsed.client ??\n    parsed.remoteAddress ??\n    null;\n\n  const question = parsed.question ?? {};\n  const questionName =\n    question.questionName ??\n    question.name ??\n    parsed.questionName ??\n    parsed.domain ??\n    null;\n\n  const questionType =\n    question.questionType ??\n    question.type ??\n    parsed.questionType ??\n    parsed.type ??\n    null;\n\n  const protocolRaw = String(parsed.protocol ?? \"\").trim();\n  const responseCodeRaw = String(parsed.responseCode ?? \"\").trim();\n  const responseTypeRaw = String(parsed.responseType ?? \"\").trim();\n\n  const normalizedType = String(questionType ?? \"\").trim().toUpperCase();\n  const normalizedName = String(questionName ?? \"\").trim();\n  const normalizedClientIp = normalizeClientIp(clientIpRaw);\n\n  let skipReason = null;\n\n  if (!normalizedType) {\n    skipReason = \"missing_question_type\";\n  } else if (!normalizedName) {\n    skipReason = \"missing_question_name\";\n  } else if (!normalizedClientIp) {\n    skipReason = \"missing_client_ip\";\n  } else if (blockedTypes.has(normalizedType)) {\n    skipReason = `filtered_type_${normalizedType}`;\n  } else if (blockedClientIps.has(normalizedClientIp)) {\n    skipReason = `filtered_client_${normalizedClientIp}`;\n  }\n\n  if (skipReason) {\n    out.push({\n      json: {\n        ok: true,\n        forwarded: false,\n        skipReason,\n        original: parsed,\n        originalEntry: entry,\n      },\n    });\n    continue;\n  }\n\n  const rfc3164Timestamp = formatRfc3164Utc(timestampRaw);\n\n  if (!rfc3164Timestamp) {\n    out.push({\n      json: {\n        ok: true,\n        forwarded: false,\n        skipReason: \"invalid_timestamp\",\n        parsed: {\n          timestampRaw,\n          clientIp: normalizedClientIp,\n          questionName: normalizedName,\n          questionType: normalizedType,\n          protocol: protocolRaw || null,\n          responseCode: responseCodeRaw || null,\n          responseType: responseTypeRaw || null,\n        },\n        original: parsed,\n        originalEntry: entry,\n      },\n    });\n    continue;\n  }\n\n  const extras = [\n    protocolRaw ? `proto=${protocolRaw}` : null,\n    responseCodeRaw ? `rcode=${responseCodeRaw}` : null,\n    responseTypeRaw ? `rtype=${responseTypeRaw}` : null,\n  ].filter(Boolean).join(\" \");\n\n  const syslogLine =\n    `<14>${rfc3164Timestamp} technitium-dns dnsmasq[1]: ` +\n    `query[${normalizedType}] ${normalizedName} from ${normalizedClientIp}` +\n    (extras ? ` ${extras}` : \"\");\n\n  out.push({\n    json: {\n      ok: true,\n      forwarded: true,\n      skipReason: null,\n      syslogLine,\n      parsed: {\n        timestampRaw,\n        clientIp: normalizedClientIp,\n        questionName: normalizedName,\n        questionType: normalizedType,\n        protocol: protocolRaw || null,\n        responseCode: responseCodeRaw || null,\n        responseType: responseTypeRaw || null,\n      },\n      original: parsed,\n      originalEntry: entry,\n    },\n  });\n}\n\nreturn out;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-976, -304],
-      "id": "ef2d3bd2-1818-4ebd-9f7d-580c0a63a82a",
-      "name": "Transform -> RFC3164"
+      "position": [-976, -448],
+      "id": "97cd12c2-45af-4d53-9565-9e73de57d5f2",
+      "name": "Transform -> RFC"
     }
   ],
+  "pinData": {},
   "connections": {
     "Webhook": {
       "main": [[{ "node": "If", "type": "main", "index": 0 }]]
     },
     "If": {
       "main": [
-        [{ "node": "Transform -> RFC3164", "type": "main", "index": 0 }],
+        [{ "node": "Transform -> RFC", "type": "main", "index": 0 }],
         [{ "node": "Respond to Webhook 'forbidden'", "type": "main", "index": 0 }]
       ]
     },
-    "Respond to Webhook 'forbidden'": { "main": [[]] },
-    "Execute Command": {
-      "main": [[{ "node": "Respond to Webhook 'true'", "type": "main", "index": 0 }]]
+    "Respond to Webhook 'forbidden'": {
+      "main": [[]]
     },
-    "Transform -> RFC3164": {
-      "main": [[{ "node": "Execute Command", "type": "main", "index": 0 }]]
+    "Execute Command": {
+      "main": [
+        [{ "node": "Respond to Webhook 'true'", "type": "main", "index": 0 }]
+      ]
+    },
+    "Transform -> RFC": {
+      "main": [
+        [{ "node": "Execute Command", "type": "main", "index": 0 }]
+      ]
     }
   },
-  "active": true,
+  "active": false,
   "settings": {
     "executionOrder": "v1",
     "binaryMode": "separate",
     "timeSavedMode": "fixed",
     "callerPolicy": "workflowsFromSameOwner",
     "availableInMCP": false
-  }
+  },
+  "id": "Tg9HDazIJTo8ycJs"
 }
