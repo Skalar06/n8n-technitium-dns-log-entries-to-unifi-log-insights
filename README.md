@@ -8,7 +8,7 @@ This workflow acts as a simple bridge between:
 
 - **Technitium DNS**
 - **n8n**
-- **UniFi Log Insights**
+- **UniFi Insights Plus**
 
 It receives DNS log entries as JSON, filters unwanted records, and converts them into syslog lines in a `dnsmasq`-style format so UniFi Log Insights can recognize and display them more naturally.
 
