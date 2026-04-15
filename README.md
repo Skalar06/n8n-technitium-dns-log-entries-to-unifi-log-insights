@@ -32,7 +32,7 @@ Example output:
 ## Requirements
 
 - a running **n8n** instance
-- a reachable **UniFi Log Insights** syslog receiver
+- a reachable **UniFi Insights Plus** syslog receiver
 - Technitium DNS or another sender that can post compatible JSON payloads to the webhook
 - network connectivity from n8n to the syslog target on UDP port **514**
 
